@@ -4,8 +4,9 @@ services:
     name: cryptosight-web
     runtime: python
     plan: free
-    buildCommand: pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput && python manage.py migrate
+    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput && python manage.py migrate
     startCommand: cd Django && gunicorn CryptoSight.wsgi:application
+    pythonVersion: "3.11"
     envVars:
       - key: DJANGO_SECRET_KEY
         sync: false
@@ -13,50 +14,6 @@ services:
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
         sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: cryptosight-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
-
-  # Celery Worker
-  - type: worker
-    name: cryptosight-worker
-    runtime: python
-    plan: free
-    buildCommand: pip install -r Django/requirements.txt
-    startCommand: cd Django && celery -A CryptoSight worker -l info
-    envVars:
-      - key: DJANGO_SECRET_KEY
-        sync: false
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: cryptosight-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
-
-  # Celery Beat Scheduler
-  - type: worker
-    name: cryptosight-beat
-    runtime: python
-    plan: free
-    buildCommand: pip install -r Django/requirements.txt
-    startCommand: cd Django && celery -A CryptoSight beat -l info
-    envVars:
-      - key: DJANGO_SECRET_KEY
-        sync: false
-      - key: DJANGO_DEBUG
-        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: cryptosight-db
