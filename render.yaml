@@ -7,6 +7,8 @@ services:
     buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput && python manage.py migrate
     startCommand: cd Django && gunicorn CryptoSight.wsgi:application
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.7"
       - key: DJANGO_SECRET_KEY
         sync: false
       - key: DJANGO_DEBUG
