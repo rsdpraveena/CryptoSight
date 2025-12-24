@@ -44,14 +44,23 @@ echo "✓ Celery worker started (PID: $CELERY_WORKER_PID)"
 
 # Start Gunicorn in foreground (keeps the service alive)
 echo "[3/3] Starting Gunicorn web server..."
-PORT=${PORT:-10000}
-echo "  → Binding to port: $PORT"
+
+# Render sets PORT automatically, but we need to ensure it's set
+if [ -z "$PORT" ]; then
+    PORT=10000
+    echo "  ⚠ Warning: PORT not set, using default: $PORT"
+else
+    echo "  → Using Render PORT: $PORT"
+fi
+
+echo "  → Binding to: 0.0.0.0:$PORT"
 echo "  → Workers: 1, Threads: 2, Timeout: 120s"
 echo "=========================================="
 echo "✓ All services started successfully!"
 echo "=========================================="
 echo ""
 
+# Start Gunicorn - this keeps the service alive
 exec gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
     --timeout 120 \
@@ -59,4 +68,5 @@ exec gunicorn CryptoSight.wsgi:application \
     --threads 2 \
     --access-logfile - \
     --error-logfile - \
-    --log-level info
+    --log-level info \
+    --preload
