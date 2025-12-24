@@ -45,15 +45,10 @@ echo "✓ Celery worker started (PID: $CELERY_WORKER_PID)"
 # Start Gunicorn in foreground (keeps the service alive)
 echo "[3/3] Starting Gunicorn web server..."
 
-# Render sets PORT automatically, but we need to ensure it's set
-if [ -z "$PORT" ]; then
-    PORT=10000
-    echo "  ⚠ Warning: PORT not set, using default: $PORT"
-else
-    echo "  → Using Render PORT: $PORT"
-fi
-
-echo "  → Binding to: 0.0.0.0:$PORT"
+# Render sets PORT automatically via environment variable
+# If not set, use default (shouldn't happen on Render)
+PORT=${PORT:-10000}
+echo "  → Binding to: 0.0.0.0:$PORT (PORT env: ${PORT})"
 echo "  → Workers: 1, Threads: 2, Timeout: 120s"
 echo "=========================================="
 echo "✓ All services started successfully!"
@@ -61,6 +56,7 @@ echo "=========================================="
 echo ""
 
 # Start Gunicorn - this keeps the service alive
+# Don't use --preload as it loads Django before forking, causing TensorFlow to load early
 exec gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
     --timeout 120 \
@@ -68,5 +64,6 @@ exec gunicorn CryptoSight.wsgi:application \
     --threads 2 \
     --access-logfile - \
     --error-logfile - \
+    --error-logfile - \
     --log-level info \
-    --preload
+    --capture-output
