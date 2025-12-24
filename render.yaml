@@ -4,8 +4,8 @@ services:
     name: cryptosight-web
     runtime: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput && python manage.py migrate
-    startCommand: cd Django && gunicorn CryptoSight.wsgi:application
+    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput
+    startCommand: cd Django && python manage.py migrate --noinput && gunicorn CryptoSight.wsgi:application
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.7"
