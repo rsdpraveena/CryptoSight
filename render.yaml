@@ -22,17 +22,7 @@ services:
           name: cryptosight-db
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
-
-  # Redis Instance
-  - type: redis
-    name: cryptosight-redis
-    plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList: []
+        sync: false
 
 databases:
   # PostgreSQL Database
