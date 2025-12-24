@@ -5,59 +5,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput
-    startCommand: cd Django && python manage.py migrate --noinput && gunicorn CryptoSight.wsgi:application
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.7"
-      - key: DJANGO_SECRET_KEY
-        sync: false
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DJANGO_ALLOWED_HOSTS
-        sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: cryptosight-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
-
-  # Celery Worker Service
-  - type: worker
-    name: cryptosight-worker
-    runtime: python
-    plan: free
-    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt
-    startCommand: cd Django && celery -A CryptoSight worker -l info
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.7"
-      - key: DJANGO_SECRET_KEY
-        sync: false
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DJANGO_ALLOWED_HOSTS
-        sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: cryptosight-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
-
-  # Celery Beat Scheduler Service
-  - type: worker
-    name: cryptosight-beat
-    runtime: python
-    plan: free
-    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt
-    startCommand: cd Django && celery -A CryptoSight beat -l info
+    startCommand: cd Django && chmod +x start.sh && ./start.sh
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.7"
