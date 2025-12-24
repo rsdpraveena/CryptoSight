@@ -64,6 +64,5 @@ exec gunicorn CryptoSight.wsgi:application \
     --threads 2 \
     --access-logfile - \
     --error-logfile - \
-    --error-logfile - \
     --log-level info \
     --capture-output
