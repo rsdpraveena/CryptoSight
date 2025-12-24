@@ -18,9 +18,9 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT
 
-# Start Celery worker in background with better logging
+# Start Celery worker in background with reduced concurrency to save memory
 echo "Starting Celery worker..."
-celery -A CryptoSight worker -l info --logfile=/tmp/celery.log --pidfile=/tmp/celery.pid &
+celery -A CryptoSight worker -l info --concurrency=2 --max-tasks-per-child=1 &
 CELERY_WORKER_PID=$!
 
 # Wait a moment and check if Celery started
