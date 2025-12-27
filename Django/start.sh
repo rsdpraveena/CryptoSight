@@ -23,11 +23,6 @@ echo "✓ Redis URL configured: ${REDIS_URL:0:20}..." # Show first 20 chars only
 PORT=${PORT:-10000}
 echo "  → Using PORT: $PORT"
 
-# Run migrations (this loads TensorFlow, so it takes time)
-echo "[1/4] Running database migrations..."
-python manage.py migrate --noinput
-echo "✓ Migrations complete"
-
 # Create necessary directories
 mkdir -p /tmp/celery
 
@@ -46,8 +41,9 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT
 
-# Start Gunicorn in background FIRST to bind port quickly for Render's health check
-echo "[2/4] Starting Gunicorn web server (binding port $PORT)..."
+# Start Gunicorn FIRST to bind port immediately for Render's health check
+# This ensures the port is available when Render checks, even if Django isn't fully loaded yet
+echo "[1/4] Starting Gunicorn web server (binding port $PORT)..."
 gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
     --timeout 120 \
@@ -93,6 +89,13 @@ if ! kill -0 $GUNICORN_PID 2>/dev/null; then
 fi
 echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT should be bound"
 
+# Run migrations in background (this loads TensorFlow, so it takes time)
+# Django can handle requests while migrations are running
+echo "[2/4] Running database migrations (in background)..."
+python manage.py migrate --noinput &
+MIGRATE_PID=$!
+echo "✓ Migrations started (PID: $MIGRATE_PID) - running in background"
+
 # Start Celery worker in background
 echo "[3/4] Starting Celery worker..."
 celery -A CryptoSight worker -l info --concurrency=2 --max-tasks-per-child=1 --logfile=/dev/stdout --pidfile=/tmp/celery/worker.pid &
@@ -122,10 +125,21 @@ echo "✓ Celery Beat started (PID: $CELERY_BEAT_PID)"
 echo "=========================================="
 echo "✓ All services started successfully!"
 echo "  - Gunicorn: Running on port $PORT (PID: $GUNICORN_PID)"
+echo "  - Migrations: Running (PID: $MIGRATE_PID)"
 echo "  - Celery Worker: PID $CELERY_WORKER_PID"
 echo "  - Celery Beat: PID $CELERY_BEAT_PID"
 echo "=========================================="
 echo ""
+
+# Wait for migrations to complete
+echo "  → Waiting for migrations to complete..."
+wait $MIGRATE_PID
+MIGRATE_EXIT=$?
+if [ $MIGRATE_EXIT -ne 0 ]; then
+    echo "✗ ERROR: Migrations failed!"
+    exit 1
+fi
+echo "✓ Migrations completed successfully"
 
 # Keep the script alive and monitor Gunicorn (the main process)
 # If Gunicorn dies, exit so Render can restart the service
