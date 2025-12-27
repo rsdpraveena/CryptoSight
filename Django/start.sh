@@ -60,13 +60,38 @@ gunicorn CryptoSight.wsgi:application \
     --pid /tmp/gunicorn.pid &
 GUNICORN_PID=$!
 
-# Wait a moment for Gunicorn to bind the port
-sleep 2
+# Wait for Gunicorn to actually bind the port and be ready
+# Check if process is running and port is listening
+echo "  → Waiting for Gunicorn to bind port $PORT..."
+for i in {1..30}; do
+    if ! kill -0 $GUNICORN_PID 2>/dev/null; then
+        echo "✗ ERROR: Gunicorn process died during startup!"
+        exit 1
+    fi
+    # Check if port is listening (using netstat or ss if available)
+    if command -v ss >/dev/null 2>&1; then
+        if ss -ln | grep -q ":$PORT "; then
+            echo "✓ Gunicorn bound to port $PORT (verified with ss)"
+            break
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        if netstat -ln 2>/dev/null | grep -q ":$PORT "; then
+            echo "✓ Gunicorn bound to port $PORT (verified with netstat)"
+            break
+        fi
+    fi
+    # If we can't verify with tools, just wait a bit longer
+    if [ $i -eq 30 ]; then
+        echo "⚠ Warning: Could not verify port binding, but Gunicorn process is running"
+    fi
+    sleep 1
+done
+
 if ! kill -0 $GUNICORN_PID 2>/dev/null; then
     echo "✗ ERROR: Gunicorn failed to start!"
     exit 1
 fi
-echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT is now bound"
+echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT should be bound"
 
 # Start Celery worker in background
 echo "[3/4] Starting Celery worker..."
