@@ -32,6 +32,9 @@ services:
     name: cryptosight-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: Allow internal Render services
 
 databases:
   # PostgreSQL Database
@@ -39,4 +42,3 @@ databases:
     plan: free
     databaseName: cryptosight
     user: cryptosight_user
-
