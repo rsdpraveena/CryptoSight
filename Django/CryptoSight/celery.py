@@ -10,8 +10,19 @@ app = Celery("CryptoSight")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
-app.conf.broker_url = os.getenv("REDIS_URL")
-app.conf.result_backend = os.getenv("REDIS_URL")
+# Get Redis URL from environment or Django settings
+redis_url = os.getenv("REDIS_URL")
+if not redis_url:
+    from django.conf import settings
+    redis_url = getattr(settings, 'CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+
+# Ensure Redis URL has database number
+if redis_url and not redis_url.endswith('/0') and not redis_url.endswith('/1'):
+    if '/' not in redis_url.split('@')[-1]:
+        redis_url = f"{redis_url}/0"
+
+app.conf.broker_url = redis_url
+app.conf.result_backend = redis_url
 
 @app.task(bind=True, ignore_result=True)
 def debug_task(self):

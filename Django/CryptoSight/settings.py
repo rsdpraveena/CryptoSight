@@ -83,8 +83,11 @@ WSGI_APPLICATION = 'CryptoSight.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+# Use DATABASE_URL from environment (Render provides this automatically)
+# Fallback to SQLite for local development
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///" + str(BASE_DIR / "db.sqlite3"))
 DATABASES = {
-    "default": dj_database_url.config(default=os.getenv("DATABASE_URL"))
+    "default": dj_database_url.config(default=DATABASE_URL)
 }
 
 
@@ -188,13 +191,23 @@ LOGGING = {
 
 # Celery Configuration
 # Use REDIS_URL from environment so it works both locally and on Render
-CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+# Render provides Redis connection string in format: redis://:password@host:port
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+# Ensure Redis URL has database number (default to 0 if not specified)
+if REDIS_URL and not REDIS_URL.endswith('/0') and not REDIS_URL.endswith('/1'):
+    if '/' not in REDIS_URL.split('@')[-1]:
+        REDIS_URL = f"{REDIS_URL}/0"
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Kolkata'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_RETRY = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
 
 # Celery Beat Scheduler Configuration
 CELERY_BEAT_SCHEDULE = {

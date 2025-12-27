@@ -22,7 +22,16 @@ services:
           name: cryptosight-db
           property: connectionString
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: redis
+          name: cryptosight-redis
+          property: connectionString
+
+  # Redis Service for Celery
+  - type: redis
+    name: cryptosight-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
 
 databases:
   # PostgreSQL Database
