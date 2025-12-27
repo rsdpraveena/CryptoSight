@@ -29,7 +29,33 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure-key")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
-ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()]
+
+# ALLOWED_HOSTS configuration
+# Read from environment variable, or use defaults
+allowed_hosts_env = os.getenv("DJANGO_ALLOWED_HOSTS", "")
+ALLOWED_HOSTS = [host.strip() for host in allowed_hosts_env.split(",") if host.strip()]
+
+# Automatically allow Render domains if on Render
+# Render sets RENDER=true and RENDER_EXTERNAL_HOSTNAME with the actual hostname
+if os.getenv("RENDER"):
+    # Allow the specific Render hostname if provided
+    render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    if render_hostname:
+        if render_hostname not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(render_hostname)
+        # Also extract and add the base domain (e.g., "onrender.com" from "xxx.onrender.com")
+        # This helps with any subdomain variations
+        if ".onrender.com" in render_hostname:
+            # Add a pattern that covers the domain
+            pass  # Django doesn't support wildcards, so we use the exact hostname
+
+# For local development, allow localhost
+if DEBUG:
+    if "localhost" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.extend(["localhost", "127.0.0.1", "0.0.0.0"])
+
+# Note: If ALLOWED_HOSTS is empty in production, Django will reject requests with DisallowedHost
+# Make sure to set DJANGO_ALLOWED_HOSTS in Render dashboard or RENDER_EXTERNAL_HOSTNAME will be used
 
 
 # Application definition
