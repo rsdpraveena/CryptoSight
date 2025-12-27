@@ -70,6 +70,7 @@ GUNICORN_PID=$!
 # Wait for Gunicorn to actually bind the port and be ready
 # Check if process is running and port is listening
 echo "  → Waiting for Gunicorn to bind port $PORT and become ready..."
+echo "     (This may take 20-30 seconds while Django/TensorFlow loads)"
 PORT_READY=0
 for i in {1..60}; do
     if ! kill -0 $GUNICORN_PID 2>/dev/null; then
@@ -94,22 +95,30 @@ for i in {1..60}; do
     if [ $PORT_LISTENING -eq 1 ] || [ $i -gt 10 ]; then
         if command -v curl >/dev/null 2>&1; then
             if curl -f -s -o /dev/null -w "%{http_code}" --max-time 2 "http://localhost:$PORT/health/" 2>/dev/null | grep -q "200"; then
-                echo "✓ Gunicorn is ready and responding to health checks!"
+                echo ""
+                echo "✓✓✓ Gunicorn is READY and responding to health checks! ✓✓✓"
                 PORT_READY=1
                 break
             fi
         elif command -v wget >/dev/null 2>&1; then
             if wget -q -O /dev/null -T 2 "http://localhost:$PORT/health/" 2>/dev/null; then
-                echo "✓ Gunicorn is ready and responding to health checks!"
+                echo ""
+                echo "✓✓✓ Gunicorn is READY and responding to health checks! ✓✓✓"
                 PORT_READY=1
                 break
             fi
         fi
     fi
     
-    # If port is listening but we can't test HTTP, assume it's ready after 15 seconds
-    if [ $PORT_LISTENING -eq 1 ] && [ $i -gt 15 ]; then
-        echo "✓ Gunicorn port $PORT is listening (HTTP test unavailable)"
+    # Show progress every 5 seconds
+    if [ $((i % 5)) -eq 0 ] && [ $i -gt 0 ]; then
+        echo "     Still waiting... ($i seconds elapsed)"
+    fi
+    
+    # If port is listening but we can't test HTTP, assume it's ready after 20 seconds
+    if [ $PORT_LISTENING -eq 1 ] && [ $i -gt 20 ]; then
+        echo ""
+        echo "✓ Gunicorn port $PORT is listening (HTTP test unavailable, but port is bound)"
         PORT_READY=1
         break
     fi
@@ -118,8 +127,10 @@ for i in {1..60}; do
 done
 
 if [ $PORT_READY -eq 0 ]; then
-    echo "⚠ Warning: Could not fully verify Gunicorn readiness, but process is running"
-    echo "   Port binding may take longer due to Django/TensorFlow loading"
+    echo ""
+    echo "⚠ Note: Gunicorn process is running, but full readiness check timed out"
+    echo "   This is usually fine - Django/TensorFlow loading can take 30-60 seconds"
+    echo "   Render may show 'No open ports' warnings during this time"
 fi
 
 if ! kill -0 $GUNICORN_PID 2>/dev/null; then
