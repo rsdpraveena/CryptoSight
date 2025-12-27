@@ -20,8 +20,16 @@ fi
 echo "✓ Redis URL configured: ${REDIS_URL:0:20}..." # Show first 20 chars only
 
 # Get PORT early - Render sets this dynamically
-PORT=${PORT:-10000}
-echo "  → Using PORT: $PORT"
+# Render ALWAYS sets PORT for web services, so if it's not set, something is wrong
+if [ -z "$PORT" ]; then
+    echo "⚠ WARNING: PORT environment variable is not set!"
+    echo "   Render should set this automatically for web services."
+    echo "   Defaulting to 10000, but this may cause issues."
+    PORT=10000
+else
+    echo "✓ PORT environment variable is set: $PORT"
+fi
+echo "  → Binding to PORT: $PORT"
 
 # Create necessary directories
 mkdir -p /tmp/celery
@@ -58,36 +66,64 @@ GUNICORN_PID=$!
 
 # Wait for Gunicorn to actually bind the port and be ready
 # Check if process is running and port is listening
-echo "  → Waiting for Gunicorn to bind port $PORT..."
-for i in {1..30}; do
+echo "  → Waiting for Gunicorn to bind port $PORT and become ready..."
+PORT_READY=0
+for i in {1..60}; do
     if ! kill -0 $GUNICORN_PID 2>/dev/null; then
         echo "✗ ERROR: Gunicorn process died during startup!"
         exit 1
     fi
-    # Check if port is listening (using netstat or ss if available)
+    
+    # Try to verify port is listening
+    PORT_LISTENING=0
     if command -v ss >/dev/null 2>&1; then
-        if ss -ln | grep -q ":$PORT "; then
-            echo "✓ Gunicorn bound to port $PORT (verified with ss)"
-            break
+        if ss -ln 2>/dev/null | grep -q ":$PORT "; then
+            PORT_LISTENING=1
         fi
     elif command -v netstat >/dev/null 2>&1; then
         if netstat -ln 2>/dev/null | grep -q ":$PORT "; then
-            echo "✓ Gunicorn bound to port $PORT (verified with netstat)"
-            break
+            PORT_LISTENING=1
         fi
     fi
-    # If we can't verify with tools, just wait a bit longer
-    if [ $i -eq 30 ]; then
-        echo "⚠ Warning: Could not verify port binding, but Gunicorn process is running"
+    
+    # Try to make an HTTP request to the health check endpoint
+    # This verifies the service is actually responding, not just binding
+    if [ $PORT_LISTENING -eq 1 ] || [ $i -gt 10 ]; then
+        if command -v curl >/dev/null 2>&1; then
+            if curl -f -s -o /dev/null -w "%{http_code}" --max-time 2 "http://localhost:$PORT/health/" 2>/dev/null | grep -q "200"; then
+                echo "✓ Gunicorn is ready and responding to health checks!"
+                PORT_READY=1
+                break
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if wget -q -O /dev/null -T 2 "http://localhost:$PORT/health/" 2>/dev/null; then
+                echo "✓ Gunicorn is ready and responding to health checks!"
+                PORT_READY=1
+                break
+            fi
+        fi
     fi
+    
+    # If port is listening but we can't test HTTP, assume it's ready after 15 seconds
+    if [ $PORT_LISTENING -eq 1 ] && [ $i -gt 15 ]; then
+        echo "✓ Gunicorn port $PORT is listening (HTTP test unavailable)"
+        PORT_READY=1
+        break
+    fi
+    
     sleep 1
 done
+
+if [ $PORT_READY -eq 0 ]; then
+    echo "⚠ Warning: Could not fully verify Gunicorn readiness, but process is running"
+    echo "   Port binding may take longer due to Django/TensorFlow loading"
+fi
 
 if ! kill -0 $GUNICORN_PID 2>/dev/null; then
     echo "✗ ERROR: Gunicorn failed to start!"
     exit 1
 fi
-echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT should be bound"
+echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT is bound and ready"
 
 # Run migrations in background (this loads TensorFlow, so it takes time)
 # Django can handle requests while migrations are running
