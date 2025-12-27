@@ -48,6 +48,13 @@ if os.getenv("RENDER"):
         if ".onrender.com" in render_hostname:
             # Add a pattern that covers the domain
             pass  # Django doesn't support wildcards, so we use the exact hostname
+    # Allow localhost for internal health checks from within the container
+    # This is needed for the startup script's curl test
+    if "localhost" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append("localhost")
+    # Also allow 127.0.0.1 for internal requests
+    if "127.0.0.1" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append("127.0.0.1")
 
 # For local development, allow localhost
 if DEBUG:
