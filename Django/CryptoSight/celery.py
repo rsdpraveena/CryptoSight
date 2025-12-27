@@ -30,10 +30,18 @@ def debug_task(self):
     print(f'Request: {self.request!r}')
 
 
-# Warm-up hook: preload and prime ML models so first task is fast
+# Warm-up hook: DISABLED to save memory on Render free tier
+# Models will be loaded on-demand when needed (lazy loading)
+# This prevents memory exhaustion during startup
 @worker_ready.connect
 def warmup_models(sender=None, **kwargs):
     logger = logging.getLogger(__name__)
+    # Disable model warm-up on Render to save memory (512MB limit)
+    if os.getenv("RENDER"):
+        logger.info("Model warm-up disabled on Render to conserve memory. Models will load on-demand.")
+        return
+    
+    # Only warm-up models in non-Render environments
     try:
         # Import here to avoid import overhead in Django process startup
         from predict.prediction import load_model_and_scaler, get_live_prediction

@@ -57,14 +57,16 @@ gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
     --timeout 180 \
     --workers 1 \
-    --threads 2 \
+    --threads 1 \
     --access-logfile - \
     --error-logfile - \
     --log-level info \
     --capture-output \
     --pid /tmp/gunicorn.pid \
     --graceful-timeout 30 \
-    --keep-alive 5 &
+    --keep-alive 5 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 &
 GUNICORN_PID=$!
 
 # Wait for Gunicorn to actually bind the port and be ready
@@ -139,16 +141,15 @@ if ! kill -0 $GUNICORN_PID 2>/dev/null; then
 fi
 echo "✓ Gunicorn started (PID: $GUNICORN_PID) - Port $PORT is bound and ready"
 
-# Run migrations in background (this loads TensorFlow, so it takes time)
-# Django can handle requests while migrations are running
-echo "[2/4] Running database migrations (in background)..."
-python manage.py migrate --noinput &
-MIGRATE_PID=$!
-echo "✓ Migrations started (PID: $MIGRATE_PID) - running in background"
+# Run migrations FIRST and wait for them to complete before starting Celery
+# This reduces peak memory usage (migrations + Celery + Gunicorn all at once)
+echo "[2/4] Running database migrations..."
+python manage.py migrate --noinput
+echo "✓ Migrations complete"
 
-# Start Celery worker in background
-echo "[3/4] Starting Celery worker..."
-celery -A CryptoSight worker -l info --concurrency=2 --max-tasks-per-child=1 --logfile=/dev/stdout --pidfile=/tmp/celery/worker.pid &
+# Start Celery worker in background with reduced concurrency to save memory
+echo "[3/4] Starting Celery worker (optimized for memory - concurrency=1)..."
+celery -A CryptoSight worker -l info --concurrency=1 --max-tasks-per-child=50 --logfile=/dev/stdout --pidfile=/tmp/celery/worker.pid &
 CELERY_WORKER_PID=$!
 
 # Wait and verify Celery worker started
@@ -181,17 +182,7 @@ echo "  - Celery Beat: PID $CELERY_BEAT_PID"
 echo "=========================================="
 echo ""
 
-# Wait for migrations to complete (but don't fail the service if they fail)
-echo "  → Waiting for migrations to complete..."
-wait $MIGRATE_PID
-MIGRATE_EXIT=$?
-if [ $MIGRATE_EXIT -ne 0 ]; then
-    echo "⚠ WARNING: Migrations exited with code $MIGRATE_EXIT"
-    echo "   This might be normal if migrations were already applied."
-    echo "   Service will continue running..."
-else
-    echo "✓ Migrations completed successfully"
-fi
+# Migrations are already complete (we run them synchronously now)
 
 # Keep the script alive and monitor Gunicorn (the main process)
 # If Gunicorn dies, exit so Render can restart the service
