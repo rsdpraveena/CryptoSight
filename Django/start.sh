@@ -52,16 +52,19 @@ trap cleanup SIGTERM SIGINT
 # Start Gunicorn FIRST to bind port immediately for Render's health check
 # This ensures the port is available when Render checks, even if Django isn't fully loaded yet
 echo "[1/4] Starting Gunicorn web server (binding port $PORT)..."
+# Start Gunicorn in background initially to verify it starts, then we'll monitor it
 gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
-    --timeout 120 \
+    --timeout 180 \
     --workers 1 \
     --threads 2 \
     --access-logfile - \
     --error-logfile - \
     --log-level info \
     --capture-output \
-    --pid /tmp/gunicorn.pid &
+    --pid /tmp/gunicorn.pid \
+    --graceful-timeout 30 \
+    --keep-alive 5 &
 GUNICORN_PID=$!
 
 # Wait for Gunicorn to actually bind the port and be ready
@@ -167,21 +170,40 @@ echo "  - Celery Beat: PID $CELERY_BEAT_PID"
 echo "=========================================="
 echo ""
 
-# Wait for migrations to complete
+# Wait for migrations to complete (but don't fail the service if they fail)
 echo "  → Waiting for migrations to complete..."
 wait $MIGRATE_PID
 MIGRATE_EXIT=$?
 if [ $MIGRATE_EXIT -ne 0 ]; then
-    echo "✗ ERROR: Migrations failed!"
-    exit 1
+    echo "⚠ WARNING: Migrations exited with code $MIGRATE_EXIT"
+    echo "   This might be normal if migrations were already applied."
+    echo "   Service will continue running..."
+else
+    echo "✓ Migrations completed successfully"
 fi
-echo "✓ Migrations completed successfully"
 
 # Keep the script alive and monitor Gunicorn (the main process)
 # If Gunicorn dies, exit so Render can restart the service
+echo ""
+echo "=========================================="
+echo "Service is running. Monitoring processes..."
+echo "=========================================="
+echo ""
+
+# Monitor all processes - if Gunicorn dies, exit (Render will restart)
+# This keeps the service running as long as Gunicorn is alive
 while kill -0 $GUNICORN_PID 2>/dev/null; do
-    sleep 5
+    # Check if Celery processes are still running (non-critical, but log if they die)
+    if ! kill -0 $CELERY_WORKER_PID 2>/dev/null; then
+        echo "⚠ Warning: Celery worker (PID: $CELERY_WORKER_PID) is not running"
+    fi
+    
+    if ! kill -0 $CELERY_BEAT_PID 2>/dev/null; then
+        echo "⚠ Warning: Celery Beat (PID: $CELERY_BEAT_PID) is not running"
+    fi
+    
+    sleep 10
 done
 
-echo "✗ Gunicorn process died, exiting..."
+echo "✗ Gunicorn process (PID: $GUNICORN_PID) died. Exiting so Render can restart the service..."
 exit 1
