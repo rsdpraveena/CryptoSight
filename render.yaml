@@ -6,6 +6,7 @@ services:
     plan: free
     buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput
     startCommand: cd Django && chmod +x start.sh && ./start.sh
+    healthCheckPath: /health/
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.7"

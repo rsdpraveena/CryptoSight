@@ -86,6 +86,7 @@ echo ""
 
 # Start Gunicorn - this keeps the service alive
 # Don't use --preload as it loads Django before forking, causing TensorFlow to load early
+# The health check endpoint (/health/) will respond quickly without loading TensorFlow
 exec gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
     --timeout 120 \
