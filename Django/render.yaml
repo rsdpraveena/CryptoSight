@@ -2,8 +2,12 @@ services:
   - type: web
     name: cryptosight
     env: python
-    buildCommand: "pip install -r requirements.txt && python manage.py collectstatic --noinput"
-    startCommand: "gunicorn CryptoSight.wsgi:application"
+    buildCommand: |
+      cd Django
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+    startCommand: "cd Django && gunicorn CryptoSight.wsgi:application"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.7
@@ -12,7 +16,7 @@ services:
       - key: PYTHONUNBUFFERED
         value: true
       - key: DISABLE_COLLECTSTATIC
-        value: 1
+        value: 0
       - key: WEB_CONCURRENCY
         value: 2
     plan: free
