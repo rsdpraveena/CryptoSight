@@ -9,17 +9,25 @@ Features:
 - Uses trained models from Model_Training
 """
 from datetime import datetime, timedelta
-from django.shortcuts import render
-from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
+import json
+import logging
+from django.shortcuts import render, redirect
+from django.http import JsonResponse, HttpResponse
+from django.views.decorators.http import require_http_methods, require_GET, require_POST
 from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.db import transaction
+from django.core.cache import cache
+from django.conf import settings
 import os
 import sys
-from django.conf import settings
-from .models import PredictionHistory
-# Celery imports removed for Render deployment
+import pandas as pd
+import numpy as np
 
+from .models import PredictionHistory
 from .prediction import get_live_data, get_live_prediction, get_realtime_price
+
+logger = logging.getLogger(__name__)
 
 def selector_view(request):
     """Display cryptocurrency selection page with available trained models"""
@@ -98,103 +106,74 @@ def results_view(request):
 
 @require_http_methods(["GET"])
 def prediction_api(request):
-    """API endpoint that generates and returns prediction data as JSON"""
-    crypto = request.GET.get('crypto', 'BTC')
+    """
+    Synchronous API endpoint for generating predictions.
+    This replaces the Celery-based async endpoint for Render deployment.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Authentication required'
+        }, status=401)
+
+    crypto = request.GET.get('crypto', 'BTC').upper()
     timeframe = request.GET.get('timeframe', 'hourly')
     period = int(request.GET.get('period', '1'))
-    
+
+    # Validate inputs
+    if timeframe not in ['hourly', 'daily']:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Invalid timeframe. Must be "hourly" or "daily"'
+        }, status=400)
+
+    if period < 1 or period > (168 if timeframe == 'hourly' else 30):
+        return JsonResponse({
+            'status': 'error',
+            'message': f'Invalid period. Must be between 1 and {168 if timeframe == "hourly" else 30} for {timeframe} predictions.'
+        }, status=400)
+
     try:
-        # Try to get a real prediction
+        # Generate prediction synchronously
         prediction_data = get_prediction(crypto, timeframe, period)
         
-        # Save to history if user is authenticated
-        if request.user.is_authenticated:
-            from django.utils import timezone
-            target_time = timezone.now() + timedelta(
-                hours=period if timeframe == 'hourly' else period * 24
-            )
-            
-            PredictionHistory.objects.create(
+        # Save to database
+        with transaction.atomic():
+            prediction = PredictionHistory.objects.create(
                 user=request.user,
                 crypto=crypto,
                 timeframe=timeframe,
                 period=period,
                 current_price=prediction_data['current_price'],
                 predicted_price=prediction_data['predicted_price'],
-                confidence_level=prediction_data['confidence_level'],
-                market_sentiment=prediction_data['market_sentiment'],
-                prediction_target_time=target_time
+                confidence=prediction_data.get('confidence', 0.7),  # Default confidence
+                sentiment=prediction_data.get('sentiment', 'neutral'),
+                model_used=f"{crypto}_{timeframe}_lstm.keras",
+                prediction_data=json.dumps(prediction_data),
+                is_completed=True  # Mark as completed since we're doing it synchronously
             )
-            
-    except Exception as e:
-        print(f"Prediction failed: {str(e)}")
-        # Return sample data for testing
-        prediction_data = {
-            'crypto': crypto,
-            'timeframe': timeframe,
-            'period': period,
-            'current_price': 50000.00,
-            'predicted_price': 52000.00,
-            'confidence_level': 'High',
-            'market_sentiment': 'Bullish',
-            'timestamps': ['2025-10-16 12:00', '2025-10-16 13:00'],
-            'historical_prices': [49000, 49500, 49800, 50000],
-            'predicted_prices': [50200, 51000, 51500, 52000],
-            'min_price': 49000,
-            'max_price': 53000,
-            'volatility': 'Medium'
-        }
-    
-    return JsonResponse({
-        'status': 'SUCCESS',
-        'result': {
-            'status': 'success',
-            **prediction_data
-        }
-    })
 
+        logger.info(f"Prediction generated for {crypto} {timeframe} period={period}")
+        
+        return JsonResponse({
+            'status': 'success',
+            'task_id': str(prediction.id),
+            'result': prediction_data
+        })
+
+    except Exception as e:
+        logger.error(f"Prediction API error: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Failed to generate prediction. Please try again later.'
+        }, status=500)
 
 @require_http_methods(["GET"])
 def prediction_api_async(request):
     """
-    Synchronous API endpoint that generates predictions directly.
-    This replaces the Celery-based async endpoint for Render deployment.
+    This is now just an alias for the main prediction_api since we're not using Celery.
     """
-    from .sync_tasks import generate_prediction_sync
-    
-    crypto = request.GET.get('crypto', 'BTC')
-    timeframe = request.GET.get('timeframe', 'hourly')
-    period = int(request.GET.get('period', '1'))
-    
-    try:
-        print(f"\nSynchronous Prediction Request: {crypto} | {timeframe} | {period}")
-        
-        # Get user_id (0 for anonymous users)
-        user_id = request.user.id if request.user.is_authenticated else 0
-        
-        # Run prediction synchronously
-        result = generate_prediction_sync(user_id, crypto, timeframe, period)
-        
-        if result.get('status') == 'error':
-            return JsonResponse({
-                'status': 'FAILURE', 
-                'error': result.get('message', 'Unknown error')
-            }, status=500)
-            
-        return JsonResponse({
-            'status': 'SUCCESS',
-            'result': result
-        })
-        
-    except Exception as e:
-        print(f"❌ Error in prediction: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({
-            'status': 'FAILURE', 
-            'error': str(e)
-        }, status=500)
-
+    return prediction_api(request)
 
 @require_http_methods(["GET"])
 def task_status_api(request):
@@ -202,10 +181,12 @@ def task_status_api(request):
     Stub for task status API (not used in synchronous mode)
     """
     return JsonResponse({
-        'status': 'error',
-        'message': 'Task status API not available in synchronous mode'
-    }, status=400)
-
+        'status': 'success',
+        'is_completed': True,
+        'message': 'Synchronous mode - predictions are completed immediately',
+        'result_available': True,
+        'is_async': False
+    })
 
 @require_http_methods(["GET"])
 def worker_status_api(request):
@@ -214,26 +195,20 @@ def worker_status_api(request):
     """
     return JsonResponse({
         'status': 'success',
-        'worker_connected': True,
-        'mode': 'synchronous',
-        'message': 'Running in synchronous mode (no Celery workers)'
+        'workers': 1,  # Always 1 in synchronous mode
+        'active_tasks': 0,  # No background tasks
+        'is_async': False,
+        'message': 'Running in synchronous mode - no background workers'
     })
-
 
 @login_required
 def prediction_history(request):
     """Display user's prediction history with filtering and pagination"""
     from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
     from django.shortcuts import render, redirect
-    from .sync_tasks import check_and_update_pending_predictions
-    
+
     if not request.user.is_authenticated:
         return redirect('login')
-        
-    # Check and update any pending predictions
-    updated_count = check_and_update_pending_predictions()
-    if updated_count > 0:
-        print(f"Updated {updated_count} predictions with actual prices")
         
     # Get filter parameters
     crypto = request.GET.get('crypto', '')
@@ -277,7 +252,6 @@ def prediction_history(request):
     
     return render(request, 'predict/history.html', context)
 
-
 @require_http_methods(["GET"])
 @login_required
 def get_actual_price_api(request, prediction_id):
@@ -285,34 +259,76 @@ def get_actual_price_api(request, prediction_id):
     API endpoint to check and update the actual price for a single prediction.
     This is called by the frontend to get real-time updates.
     """
-    from .sync_tasks import update_actual_price
-    
     try:
+        # Use cache to prevent too many API calls
+        cache_key = f'prediction_{prediction_id}_actual_price'
+        cached_data = cache.get(cache_key)
+        
+        if cached_data:
+            return JsonResponse(cached_data)
+            
         prediction = PredictionHistory.objects.get(id=prediction_id, user=request.user)
         
-        # Check and update the actual price if needed
-        if prediction.actual_price is None and prediction.is_prediction_time_reached():
-            update_actual_price(prediction)
-            prediction.refresh_from_db()  # Refresh to get updated fields
+        # Only update if the prediction time has passed and we don't have an actual price yet
+        if prediction.target_time and prediction.target_time <= timezone.now() and not prediction.actual_price:
+            try:
+                # Get the actual price from Binance
+                symbol = prediction.crypto
+                price_data = get_realtime_price(symbol)
+                
+                if price_data and 'price' in price_data:
+                    with transaction.atomic():
+                        # Use update_fields to prevent race conditions
+                        PredictionHistory.objects.filter(
+                            id=prediction_id, 
+                            actual_price__isnull=True
+                        ).update(
+                            actual_price=price_data['price'],
+                            actual_price_updated_at=timezone.now()
+                        )
+                        
+                        # Refresh the prediction object
+                        prediction.refresh_from_db()
+                        
+                        # Cache for 5 minutes to avoid too many API calls
+                        response_data = {
+                            'status': 'success',
+                            'actual_price': prediction.actual_price,
+                            'updated': True,
+                            'cached': False
+                        }
+                        cache.set(cache_key, response_data, 300)  # 5 minutes cache
+                        
+                        return JsonResponse(response_data)
+                
+            except Exception as e:
+                logger.error(f"Error fetching actual price for {prediction_id}: {str(e)}", exc_info=True)
+                
+        # Return current data without updating
+        response_data = {
+            'status': 'success',
+            'actual_price': prediction.actual_price,
+            'updated': False,
+            'cached': False
+        }
         
-        # Return the current status
-        if prediction.actual_price is not None:
-            return JsonResponse({
-                'status': 'completed',
-                'actual_price': prediction.actual_price,
-                'is_profitable': prediction.is_profitable(),
-                'price_difference': prediction.price_difference()
-            })
-            
-        return JsonResponse({
-            'status': 'pending',
-            'target_time': prediction.prediction_target_time.isoformat(),
-            'time_remaining': (prediction.prediction_target_time - timezone.now()).total_seconds()
-        })
+        # Cache for 1 minute if we didn't update
+        cache.set(cache_key, response_data, 60)
+        
+        return JsonResponse(response_data)
         
     except PredictionHistory.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'Prediction not found'}, status=404)
-
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Prediction not found or access denied'
+        }, status=404)
+        
+    except Exception as e:
+        logger.error(f"Error in get_actual_price_api: {str(e)}", exc_info=True)
+        return JsonResponse({
+            'status': 'error',
+            'message': 'An error occurred while fetching the actual price.'
+        }, status=500)
 
 def get_prediction(crypto, timeframe, period):
     """Generate price prediction using trained LSTM model from Model_Training"""
