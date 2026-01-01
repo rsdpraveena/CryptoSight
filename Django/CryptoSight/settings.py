@@ -74,7 +74,6 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'django_celery_beat',
     'home',
     'authuser',
     'predict',
@@ -222,32 +221,4 @@ LOGGING = {
     },
 }
 
-# Celery Configuration
-# Use REDIS_URL from environment so it works both locally and on Render
-# Render provides Redis connection string in format: redis://:password@host:port
-REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-
-# Ensure Redis URL has database number (default to 0 if not specified)
-if REDIS_URL and not REDIS_URL.endswith('/0') and not REDIS_URL.endswith('/1'):
-    if '/' not in REDIS_URL.split('@')[-1]:
-        REDIS_URL = f"{REDIS_URL}/0"
-
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = 'Asia/Kolkata'
-CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-CELERY_BROKER_CONNECTION_RETRY = True
-CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
-
-# Celery Beat Scheduler Configuration
-CELERY_BEAT_SCHEDULE = {
-    'check-for-updates-every-5-minutes': {
-        'task': 'check_and_update_all_pending_predictions',
-        'schedule': 300.0,  # Run every 300 seconds (5 minutes)
-        'args': (),
-        'options': {'expires': 240.0}, # Task expires after 4 minutes
-    },
-}
+# Celery configuration removed - Using synchronous execution for Render

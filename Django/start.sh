@@ -1,26 +1,19 @@
 #!/bin/bash
-# Start script to run Gunicorn, Celery worker, and Celery Beat
-# Optimized for Render free plan
+# Start script for CryptoSight Django application
+# Optimized for Render free plan (synchronous mode)
 
 set -e
 
 cd "$(dirname "$0")"
 
 echo "=========================================="
-echo "Starting CryptoSight Deployment"
+echo "Starting CryptoSight (Synchronous Mode)"
 echo "=========================================="
 
-# Verify Redis connection
-echo "[0/4] Verifying Redis connection..."
-if [ -z "$REDIS_URL" ]; then
-    echo "✗ ERROR: REDIS_URL environment variable is not set!"
-    echo "   Please configure Redis service in render.yaml"
-    exit 1
-fi
-echo "✓ Redis URL configured: ${REDIS_URL:0:20}..." # Show first 20 chars only
+echo "[1/2] Running database migrations..."
+python manage.py migrate --noinput
 
 # Get PORT early - Render sets this dynamically
-# Render ALWAYS sets PORT for web services, so if it's not set, something is wrong
 if [ -z "$PORT" ]; then
     echo "⚠ WARNING: PORT environment variable is not set!"
     echo "   Render should set this automatically for web services."
@@ -28,6 +21,7 @@ if [ -z "$PORT" ]; then
     PORT=10000
 else
     echo "✓ PORT environment variable is set: $PORT"
+fi
 fi
 echo "  → Binding to PORT: $PORT"
 
@@ -49,18 +43,16 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT
 
-# Start Gunicorn FIRST to bind port immediately for Render's health check
-# This ensures the port is available when Render checks, even if Django isn't fully loaded yet
-echo "[1/4] Starting Gunicorn web server (binding port $PORT)..."
-# Start Gunicorn in background initially to verify it starts, then we'll monitor it
-gunicorn CryptoSight.wsgi:application \
+# Start Gunicorn for the Django application
+echo "[2/2] Starting Gunicorn server..."
+exec gunicorn CryptoSight.wsgi:application \
     --bind 0.0.0.0:$PORT \
-    --timeout 180 \
-    --workers 1 \
-    --threads 1 \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level info \
+    --workers 2 \
+    --worker-class sync \
+    --log-file - \
+    --timeout 120 \
+    --max-requests 1000 \
+    --max-requests-jitter 50
     --capture-output \
     --pid /tmp/gunicorn.pid \
     --graceful-timeout 30 \

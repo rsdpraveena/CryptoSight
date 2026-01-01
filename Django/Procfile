@@ -1,2 +1,2 @@
-web: gunicorn CryptoSight.wsgi:application & celery -A CryptoSight worker --loglevel=info --concurrency=1 --max-memory-per-child=200000
+web: gunicorn CryptoSight.wsgi:application
 

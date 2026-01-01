@@ -17,7 +17,7 @@ import os
 import sys
 from django.conf import settings
 from .models import PredictionHistory
-from celery.result import AsyncResult
+# Celery imports removed for Render deployment
 
 from .prediction import get_live_data, get_live_prediction, get_realtime_price
 
@@ -157,247 +157,162 @@ def prediction_api(request):
 @require_http_methods(["GET"])
 def prediction_api_async(request):
     """
-    Async API endpoint that submits prediction task to Celery and returns task_id
-    This allows the frontend to poll for results without blocking
+    Synchronous API endpoint that generates predictions directly.
+    This replaces the Celery-based async endpoint for Render deployment.
     """
-    from .tasks import generate_prediction_task
+    from .sync_tasks import generate_prediction_sync
     
     crypto = request.GET.get('crypto', 'BTC')
     timeframe = request.GET.get('timeframe', 'hourly')
     period = int(request.GET.get('period', '1'))
     
     try:
-        print(f"\nAsync Prediction Request: {crypto} | {timeframe} | {period}")
-        print(f"Submitting task to Celery worker...")
+        print(f"\nSynchronous Prediction Request: {crypto} | {timeframe} | {period}")
         
         # Get user_id (0 for anonymous users)
         user_id = request.user.id if request.user.is_authenticated else 0
         
-        # Submit task to Celery
-        task = generate_prediction_task.delay(user_id, crypto, timeframe, period)
+        # Run prediction synchronously
+        result = generate_prediction_sync(user_id, crypto, timeframe, period)
         
-        print(f"Task submitted to Celery!")
-        print(f"   Task ID: {task.id}")
-        print(f"   Status: {task.status}")
-        
+        if result.get('status') == 'error':
+            return JsonResponse({
+                'status': 'FAILURE', 
+                'error': result.get('message', 'Unknown error')
+            }, status=500)
+            
         return JsonResponse({
-            'status': 'PENDING',
-            'task_id': task.id,
-            'message': 'Prediction task submitted successfully. Use task_id to check status.'
+            'status': 'SUCCESS',
+            'result': result
         })
         
     except Exception as e:
-        print(f"❌ Error submitting async task: {str(e)}")
+        print(f"❌ Error in prediction: {str(e)}")
         import traceback
         traceback.print_exc()
-        return JsonResponse({'status': 'FAILURE', 'error': str(e)}, status=500)
+        return JsonResponse({
+            'status': 'FAILURE', 
+            'error': str(e)
+        }, status=500)
 
 
 @require_http_methods(["GET"])
 def task_status_api(request):
     """
-    API endpoint to check the status of a Celery task
-    Returns task status and result if completed
+    Stub for task status API (not used in synchronous mode)
     """
-    task_id = request.GET.get('task_id')
-    
-    if not task_id:
-        return JsonResponse({'error': 'task_id parameter is required'}, status=400)
-    
-    try:
-        # Get task result from Celery
-        task_result = AsyncResult(task_id)
-        
-        response_data = {
-            'task_id': task_id,
-            'status': task_result.status,
-        }
-        
-        if task_result.ready():
-            # Task is complete
-            if task_result.successful():
-                response_data['result'] = task_result.result
-                print(f"✅ Task {task_id} completed successfully")
-            else:
-                error_msg = str(task_result.result)
-                response_data['error'] = error_msg
-                response_data['status'] = 'FAILURE'
-                print(f"❌ ERROR: Task {task_id} failed: {error_msg}")
-        else:
-            # Task is still pending or running
-            status = task_result.status
-            if status == 'PENDING':
-                response_data['message'] = 'Task is queued and waiting to be processed...'
-            elif status == 'STARTED' or status == 'PROGRESS':
-                response_data['message'] = 'Task is currently running...'
-            else:
-                response_data['message'] = f'Task status: {status}'
-            
-            print(f"⏳ Task {task_id} status: {status}")
-        
-        return JsonResponse(response_data)
-        
-    except Exception as e:
-        error_msg = str(e)
-        print(f"❌ ERROR checking task status: {error_msg}")
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({'status': 'FAILURE', 'error': error_msg}, status=500)
+    return JsonResponse({
+        'status': 'error',
+        'message': 'Task status API not available in synchronous mode'
+    }, status=400)
 
 
 @require_http_methods(["GET"])
 def worker_status_api(request):
     """
-    API endpoint to check if Celery worker is running and connected
-    Returns worker health status
+    Stub for worker status API (not used in synchronous mode)
     """
-    try:
-        from celery import current_app
-        import redis
-        import os
-        
-        # Check Redis connection
-        redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-        redis_connected = False
-        redis_error = None
-        
-        try:
-            # Parse Redis URL
-            if '://' in redis_url:
-                redis_url_clean = redis_url.split('://', 1)[1]
-            else:
-                redis_url_clean = redis_url
-                
-            if '@' in redis_url_clean:
-                auth, rest = redis_url_clean.split('@', 1)
-                if ':' in rest:
-                    host, port_db = rest.split(':', 1)
-                    if '/' in port_db:
-                        port, db = port_db.split('/', 1)
-                    else:
-                        port, db = port_db, '0'
-                else:
-                    host, port, db = rest, '6379', '0'
-                password = auth.split(':', 1)[1] if ':' in auth else None
-            else:
-                if ':' in redis_url_clean:
-                    host, port_db = redis_url_clean.split(':', 1)
-                    if '/' in port_db:
-                        port, db = port_db.split('/', 1)
-                    else:
-                        port, db = port_db, '0'
-                else:
-                    host, port, db = redis_url_clean, '6379', '0'
-                password = None
-            
-            r = redis.Redis(host=host, port=int(port), db=int(db), password=password, socket_connect_timeout=3)
-            r.ping()
-            redis_connected = True
-        except Exception as e:
-            redis_error = str(e)
-        
-        # Check active workers
-        inspect = current_app.control.inspect()
-        active_workers = inspect.active() if inspect else None
-        worker_count = len(active_workers) if active_workers else 0
-        
-        # Check registered workers
-        registered_workers = inspect.registered() if inspect else None
-        registered_count = len(registered_workers) if registered_workers else 0
-        
-        status = 'healthy' if (redis_connected and worker_count > 0) else 'unhealthy'
-        
-        return JsonResponse({
-            'status': status,
-            'redis_connected': redis_connected,
-            'redis_error': redis_error,
-            'active_workers': worker_count,
-            'registered_workers': registered_count,
-            'message': 'Worker is running and connected' if status == 'healthy' else 'Worker may not be running or connected to Redis'
-        })
-        
-    except Exception as e:
-        return JsonResponse({
-            'status': 'error',
-            'error': str(e),
-            'message': 'Unable to check worker status'
-        }, status=500)
+    return JsonResponse({
+        'status': 'success',
+        'worker_connected': True,
+        'mode': 'synchronous',
+        'message': 'Running in synchronous mode (no Celery workers)'
+    })
 
 
 @login_required
 def prediction_history(request):
     """Display user's prediction history with filtering and pagination"""
-    from django.core.paginator import Paginator
+    from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+    from django.shortcuts import render, redirect
+    from .sync_tasks import check_and_update_pending_predictions
     
-    # Extract filter parameters from query string
-    crypto_filter = request.GET.get('crypto', '')
-    timeframe_filter = request.GET.get('timeframe', '')
+    if not request.user.is_authenticated:
+        return redirect('login')
+        
+    # Check and update any pending predictions
+    updated_count = check_and_update_pending_predictions()
+    if updated_count > 0:
+        print(f"Updated {updated_count} predictions with actual prices")
+        
+    # Get filter parameters
+    crypto = request.GET.get('crypto', '')
+    timeframe = request.GET.get('timeframe', '')
+    status = request.GET.get('status', '')
     
-    # Query all predictions for current user
-    all_predictions = PredictionHistory.objects.filter(user=request.user)
+    # Start with base queryset
+    predictions = PredictionHistory.objects.filter(user=request.user).order_by('-created_at')
     
-    # Apply cryptocurrency and timeframe filters if provided
-    if crypto_filter:
-        all_predictions = all_predictions.filter(crypto=crypto_filter)
-    if timeframe_filter:
-        all_predictions = all_predictions.filter(timeframe=timeframe_filter)
+    # Apply filters
+    if crypto:
+        predictions = predictions.filter(crypto=crypto)
+    if timeframe:
+        predictions = predictions.filter(timeframe=timeframe)
+    if status == 'pending':
+        predictions = predictions.filter(actual_price__isnull=True)
+    elif status == 'completed':
+        predictions = predictions.filter(actual_price__isnull=False)
     
-    # Prepare filter dropdown options
-    all_user_predictions = PredictionHistory.objects.filter(user=request.user)
-    # Display all supported cryptocurrencies in filter dropdown
-    available_cryptos = ['ADA', 'AVAX', 'BNB', 'BTC', 'DOGE', 'ETH', 'SOL', 'XRP']
-    available_timeframes = ['hourly', 'daily']
+    # Pagination
+    paginator = Paginator(predictions, 10)  # Show 10 predictions per page
+    page_number = request.GET.get('page')
     
-    # Sort predictions by creation date (newest first)
-    all_predictions = all_predictions.order_by('-created_at')
+    try:
+        page_obj = paginator.page(page_number)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
     
-    # Implement pagination (10 items per page)
-    paginator = Paginator(all_predictions, 10)
-    page_number = request.GET.get('page', 1)
-    predictions = paginator.get_page(page_number)
-    
-    # Log pagination and filter information for debugging
-    total_count = all_predictions.count()
-    print(f"\nHistory Page for {request.user.username}:")
-    print(f"   Filters: Crypto={crypto_filter}, Timeframe={timeframe_filter}")
-    print(f"   Total predictions: {total_count}")
-    print(f"   Current page: {page_number}")
-    print(f"   Showing: {len(predictions)} predictions")
-    if predictions:
-        print(f"   Latest on this page: {predictions[0].crypto} at {predictions[0].created_at}")
+    # Get unique cryptos for filter dropdown
+    cryptos = PredictionHistory.objects.filter(user=request.user).values_list('crypto', flat=True).distinct()
     
     context = {
-        'predictions': predictions,
-        'total_count': total_count,
-        'crypto_filter': crypto_filter,
-        'timeframe_filter': timeframe_filter,
-        'available_cryptos': available_cryptos,
-        'available_timeframes': available_timeframes,
+        'page_obj': page_obj,
+        'cryptos': cryptos,
+        'selected_crypto': crypto,
+        'selected_timeframe': timeframe,
+        'selected_status': status,
     }
+    
     return render(request, 'predict/history.html', context)
+
 
 @require_http_methods(["GET"])
 @login_required
 def get_actual_price_api(request, prediction_id):
     """
-    API endpoint to check the actual price for a single prediction.
-    Used by the history page for live updates.
+    API endpoint to check and update the actual price for a single prediction.
+    This is called by the frontend to get real-time updates.
     """
+    from .sync_tasks import update_actual_price
+    
     try:
         prediction = PredictionHistory.objects.get(id=prediction_id, user=request.user)
         
+        # Check and update the actual price if needed
+        if prediction.actual_price is None and prediction.is_prediction_time_reached():
+            update_actual_price(prediction)
+            prediction.refresh_from_db()  # Refresh to get updated fields
+        
+        # Return the current status
         if prediction.actual_price is not None:
             return JsonResponse({
-                'status': 'SUCCESS',
-                'actual_price': f"{prediction.actual_price:,.2f}",
-                'prediction_accuracy': prediction.prediction_accuracy
+                'status': 'completed',
+                'actual_price': prediction.actual_price,
+                'is_profitable': prediction.is_profitable(),
+                'price_difference': prediction.price_difference()
             })
-        else:
-            # Price is not yet available
-            return JsonResponse({'status': 'PENDING'})
             
+        return JsonResponse({
+            'status': 'pending',
+            'target_time': prediction.prediction_target_time.isoformat(),
+            'time_remaining': (prediction.prediction_target_time - timezone.now()).total_seconds()
+        })
+        
     except PredictionHistory.DoesNotExist:
-        return JsonResponse({'status': 'ERROR', 'message': 'Prediction not found.'}, status=404)
+        return JsonResponse({'status': 'error', 'message': 'Prediction not found'}, status=404)
+
 
 def get_prediction(crypto, timeframe, period):
     """Generate price prediction using trained LSTM model from Model_Training"""

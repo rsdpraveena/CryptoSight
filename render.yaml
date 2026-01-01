@@ -4,8 +4,12 @@ services:
     name: cryptosight-web
     runtime: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r Django/requirements.txt && cd Django && python manage.py collectstatic --noinput
-    startCommand: cd Django && chmod +x start.sh && ./start.sh
+    buildCommand: |
+      pip install --upgrade pip && 
+      pip install -r Django/requirements.txt && 
+      cd Django && 
+      python manage.py collectstatic --noinput
+    startCommand: cd Django && gunicorn CryptoSight.wsgi:application --log-file -
     healthCheckPath: /health/
     envVars:
       - key: PYTHON_VERSION
@@ -22,21 +26,8 @@ services:
         fromDatabase:
           name: cryptosight-db
           property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: cryptosight-redis
-          property: connectionString
 
-  # Redis Service for Celery
-  - type: redis
-    name: cryptosight-redis
-    plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList:
-      - source: 0.0.0.0/0
-        description: Allow internal Render services
-
+# Database configuration
 databases:
   # PostgreSQL Database
   - name: cryptosight-db
