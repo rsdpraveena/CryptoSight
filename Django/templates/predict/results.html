@@ -279,38 +279,94 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-    // Function to poll task status until completion
-    function pollTaskStatus(taskId, maxAttempts = 60, interval = 1000) {
+    // Function to poll task status until completion with progress indicators
+    function pollTaskStatus(taskId, maxAttempts = 180, baseInterval = 1000) {
         return new Promise((resolve, reject) => {
             let attempts = 0;
+            const startTime = Date.now();
+            let statusUpdateInterval;
+            
+            // Update progress indicators
+            const updateProgress = () => {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+                
+                // Update status messages based on elapsed time
+                let statusMsg = 'Processing prediction...';
+                if (elapsed < 10) {
+                    statusMsg = 'Initializing AI models...';
+                } else if (elapsed < 30) {
+                    statusMsg = 'Loading TensorFlow models...';
+                } else if (elapsed < 60) {
+                    statusMsg = 'Fetching market data...';
+                } else if (elapsed < 90) {
+                    statusMsg = 'Running prediction algorithm...';
+                } else {
+                    statusMsg = 'Finalizing prediction results...';
+                }
+                
+                // Update loading text with progress
+                const loadingElements = document.querySelectorAll('.metric-value');
+                loadingElements.forEach(el => {
+                    if (el.textContent === 'Loading...') {
+                        el.textContent = `${statusMsg} (${timeStr})`;
+                    }
+                });
+            };
+            
+            // Start progress updates every 2 seconds
+            statusUpdateInterval = setInterval(updateProgress, 2000);
             
             const checkStatus = () => {
                 attempts++;
-                console.log(`Polling task status (attempt ${attempts}/${maxAttempts})...`);
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                
+                // Exponential backoff: increase interval after 30 seconds
+                let currentInterval = baseInterval;
+                if (elapsed > 30) {
+                    currentInterval = 2000; // 2 seconds after 30s
+                }
+                if (elapsed > 60) {
+                    currentInterval = 3000; // 3 seconds after 60s
+                }
+                
+                console.log(`Polling task status (attempt ${attempts}/${maxAttempts}, ${elapsed}s elapsed)...`);
                 
                 fetch(`/predict/api/task-status/?task_id=${taskId}`)
-                    .then(response => response.json())
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        return response.json();
+                    })
                     .then(statusData => {
                         console.log('Task status:', statusData.status);
                         
                         if (statusData.status === 'SUCCESS') {
+                            clearInterval(statusUpdateInterval);
                             console.log('Task completed successfully!');
                             resolve(statusData.result);
-                        } else if (statusData.status === 'FAILURE') {
+                        } else if (statusData.status === 'FAILURE' || statusData.status === 'REVOKED') {
+                            clearInterval(statusUpdateInterval);
                             reject(new Error(statusData.error || 'Task failed'));
                         } else if (attempts >= maxAttempts) {
-                            reject(new Error('Task timeout - took too long to complete'));
+                            clearInterval(statusUpdateInterval);
+                            reject(new Error(`Task timeout after ${Math.floor(elapsed / 60)} minutes. The prediction is taking longer than expected. Please try again.`));
                         } else {
-                            // Task still pending/running, check again
-                            setTimeout(checkStatus, interval);
+                            // Task still pending/running, check again with current interval
+                            setTimeout(checkStatus, currentInterval);
                         }
                     })
                     .catch(error => {
                         console.error('Error checking task status:', error);
                         if (attempts >= maxAttempts) {
-                            reject(error);
+                            clearInterval(statusUpdateInterval);
+                            reject(new Error(`Failed to check task status: ${error.message}. The Celery worker may be unavailable.`));
                         } else {
-                            setTimeout(checkStatus, interval);
+                            // Retry with exponential backoff on network errors
+                            setTimeout(checkStatus, currentInterval * 2);
                         }
                     });
             };
@@ -346,6 +402,19 @@
         }
         
         console.log('Fetching prediction for:', crypto, timeframe, period);
+        
+        // Check worker status first (optional, non-blocking)
+        fetch('/predict/api/worker-status/')
+            .then(response => response.json())
+            .then(workerStatus => {
+                console.log('Worker status:', workerStatus);
+                if (workerStatus.status !== 'healthy') {
+                    console.warn('Worker may not be ready:', workerStatus.message);
+                }
+            })
+            .catch(err => {
+                console.warn('Could not check worker status:', err);
+            });
         
         // Submit async prediction (Celery) and poll until complete
         fetch(`/predict/api/predict-async/?crypto=${crypto}&timeframe=${timeframe}&period=${period}`)
@@ -627,17 +696,44 @@
             })
             .catch(error => {
                 console.error('Prediction Error:', error);
+                
+                // Check if it's a timeout error
+                const isTimeout = error.message && error.message.includes('timeout');
+                const isWorkerError = error.message && (error.message.includes('Celery worker') || error.message.includes('worker'));
+                
+                let errorTitle = 'Prediction Failed';
+                let errorMessage = error.message || 'Unable to generate prediction. The model may not be available for this cryptocurrency.';
+                let showRetry = false;
+                
+                if (isTimeout) {
+                    errorTitle = 'Prediction Taking Too Long';
+                    errorMessage = 'The prediction is taking longer than expected. This can happen when the AI models are loading for the first time.';
+                    showRetry = true;
+                } else if (isWorkerError) {
+                    errorTitle = 'Service Temporarily Unavailable';
+                    errorMessage = 'The prediction service is currently unavailable. Please try again in a moment.';
+                    showRetry = true;
+                }
+                
                 document.querySelector('.results-container').innerHTML = `
                     <div style="text-align: center; padding: 4rem 2rem;">
                         <div style="font-size: 4rem; margin-bottom: 1rem;">⚠️</div>
-                        <h2 style="color: #f85149; margin-bottom: 1rem;">Prediction Failed</h2>
+                        <h2 style="color: #f85149; margin-bottom: 1rem;">${errorTitle}</h2>
                         <p style="color: rgba(255,255,255,0.7); margin-bottom: 2rem; max-width: 600px; margin-left: auto; margin-right: auto;">
-                            ${error.message || 'Unable to generate prediction. The model may not be available for this cryptocurrency.'}
+                            ${errorMessage}
                         </p>
-                        <a href="/predict/selector/" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 1rem 2rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 12px; font-weight: 600;">
-                            <i class="fas fa-arrow-left"></i>
-                            Try Another Cryptocurrency
-                        </a>
+                        <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
+                            ${showRetry ? `
+                            <button onclick="window.location.reload()" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 1rem 2rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 12px; font-weight: 600; border: none; cursor: pointer;">
+                                <i class="fas fa-redo"></i>
+                                Retry Prediction
+                            </button>
+                            ` : ''}
+                            <a href="/predict/selector/" class="btn btn-secondary" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 1rem 2rem; background: rgba(255,255,255,0.1); color: white; text-decoration: none; border-radius: 12px; font-weight: 600;">
+                                <i class="fas fa-arrow-left"></i>
+                                Try Another Cryptocurrency
+                            </a>
+                        </div>
                     </div>
                 `;
             });

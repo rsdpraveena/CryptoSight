@@ -147,16 +147,88 @@ echo "[2/4] Running database migrations..."
 python manage.py migrate --noinput
 echo "✓ Migrations complete"
 
+# Test Redis connectivity before starting Celery
+echo "[3/4] Testing Redis connectivity..."
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import os
+import sys
+try:
+    import redis
+    redis_url = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+    # Parse Redis URL
+    if '://' in redis_url:
+        redis_url = redis_url.split('://', 1)[1]
+    if '@' in redis_url:
+        auth, rest = redis_url.split('@', 1)
+        if ':' in rest:
+            host, port_db = rest.split(':', 1)
+            if '/' in port_db:
+                port, db = port_db.split('/', 1)
+            else:
+                port, db = port_db, '0'
+        else:
+            host, port, db = rest, '6379', '0'
+        password = auth.split(':', 1)[1] if ':' in auth else None
+    else:
+        if ':' in redis_url:
+            host, port_db = redis_url.split(':', 1)
+            if '/' in port_db:
+                port, db = port_db.split('/', 1)
+            else:
+                port, db = port_db, '0'
+        else:
+            host, port, db = redis_url, '6379', '0'
+        password = None
+    r = redis.Redis(host=host, port=int(port), db=int(db), password=password, socket_connect_timeout=5)
+    r.ping()
+    print('✓ Redis connection successful')
+    sys.exit(0)
+except Exception as e:
+    print(f'⚠ Redis connection test failed: {e}')
+    print('   Continuing anyway - worker will retry connection...')
+    sys.exit(0)
+" || true
+fi
+
 # Start Celery worker in background with reduced concurrency to save memory
-echo "[3/4] Starting Celery worker (optimized for memory - concurrency=1)..."
+echo "Starting Celery worker (optimized for memory - concurrency=1)..."
 celery -A CryptoSight worker -l info --concurrency=1 --max-tasks-per-child=50 --logfile=/dev/stdout --pidfile=/tmp/celery/worker.pid &
 CELERY_WORKER_PID=$!
 
-# Wait and verify Celery worker started
-sleep 3
-if ! kill -0 $CELERY_WORKER_PID 2>/dev/null; then
-    echo "✗ ERROR: Celery worker failed to start!"
-    exit 1
+# Wait and verify Celery worker started and is ready
+echo "  → Waiting for Celery worker to initialize..."
+WORKER_READY=0
+for i in {1..15}; do
+    if ! kill -0 $CELERY_WORKER_PID 2>/dev/null; then
+        echo "✗ ERROR: Celery worker process died during startup!"
+        exit 1
+    fi
+    
+    # Check if worker is actually running by checking for worker log output
+    # If pidfile exists and process is running, assume worker is starting
+    if [ -f /tmp/celery/worker.pid ]; then
+        WORKER_PID_FROM_FILE=$(cat /tmp/celery/worker.pid 2>/dev/null || echo "")
+        if [ -n "$WORKER_PID_FROM_FILE" ] && kill -0 "$WORKER_PID_FROM_FILE" 2>/dev/null; then
+            if [ $i -ge 5 ]; then
+                echo "✓ Celery worker is running (PID: $CELERY_WORKER_PID)"
+                WORKER_READY=1
+                break
+            fi
+        fi
+    fi
+    
+    sleep 1
+done
+
+if [ $WORKER_READY -eq 0 ]; then
+    if ! kill -0 $CELERY_WORKER_PID 2>/dev/null; then
+        echo "✗ ERROR: Celery worker failed to start!"
+        exit 1
+    else
+        echo "⚠ Warning: Could not fully verify Celery worker readiness, but process is running"
+        echo "   Worker may still be connecting to Redis..."
+    fi
 fi
 echo "✓ Celery worker started (PID: $CELERY_WORKER_PID)"
 
@@ -176,13 +248,11 @@ echo "✓ Celery Beat started (PID: $CELERY_BEAT_PID)"
 echo "=========================================="
 echo "✓ All services started successfully!"
 echo "  - Gunicorn: Running on port $PORT (PID: $GUNICORN_PID)"
-echo "  - Migrations: Running (PID: $MIGRATE_PID)"
+echo "  - Migrations: Completed"
 echo "  - Celery Worker: PID $CELERY_WORKER_PID"
 echo "  - Celery Beat: PID $CELERY_BEAT_PID"
 echo "=========================================="
 echo ""
-
-# Migrations are already complete (we run them synchronously now)
 
 # Keep the script alive and monitor Gunicorn (the main process)
 # If Gunicorn dies, exit so Render can restart the service

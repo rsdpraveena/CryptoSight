@@ -217,20 +217,111 @@ def task_status_api(request):
             # Task is complete
             if task_result.successful():
                 response_data['result'] = task_result.result
-                print(f"Task {task_id} completed successfully")
+                print(f"✅ Task {task_id} completed successfully")
             else:
-                response_data['error'] = str(task_result.result)
-                print(f"ERROR: Task {task_id} failed: {task_result.result}")
+                error_msg = str(task_result.result)
+                response_data['error'] = error_msg
+                response_data['status'] = 'FAILURE'
+                print(f"❌ ERROR: Task {task_id} failed: {error_msg}")
         else:
             # Task is still pending or running
-            response_data['message'] = 'Task is still processing...'
-            print(f"Task {task_id} status: {task_result.status}")
+            status = task_result.status
+            if status == 'PENDING':
+                response_data['message'] = 'Task is queued and waiting to be processed...'
+            elif status == 'STARTED' or status == 'PROGRESS':
+                response_data['message'] = 'Task is currently running...'
+            else:
+                response_data['message'] = f'Task status: {status}'
+            
+            print(f"⏳ Task {task_id} status: {status}")
         
         return JsonResponse(response_data)
         
     except Exception as e:
-        print(f"ERROR checking task status: {str(e)}")
-        return JsonResponse({'status': 'FAILURE', 'error': str(e)}, status=500)
+        error_msg = str(e)
+        print(f"❌ ERROR checking task status: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'status': 'FAILURE', 'error': error_msg}, status=500)
+
+
+@require_http_methods(["GET"])
+def worker_status_api(request):
+    """
+    API endpoint to check if Celery worker is running and connected
+    Returns worker health status
+    """
+    try:
+        from celery import current_app
+        import redis
+        import os
+        
+        # Check Redis connection
+        redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        redis_connected = False
+        redis_error = None
+        
+        try:
+            # Parse Redis URL
+            if '://' in redis_url:
+                redis_url_clean = redis_url.split('://', 1)[1]
+            else:
+                redis_url_clean = redis_url
+                
+            if '@' in redis_url_clean:
+                auth, rest = redis_url_clean.split('@', 1)
+                if ':' in rest:
+                    host, port_db = rest.split(':', 1)
+                    if '/' in port_db:
+                        port, db = port_db.split('/', 1)
+                    else:
+                        port, db = port_db, '0'
+                else:
+                    host, port, db = rest, '6379', '0'
+                password = auth.split(':', 1)[1] if ':' in auth else None
+            else:
+                if ':' in redis_url_clean:
+                    host, port_db = redis_url_clean.split(':', 1)
+                    if '/' in port_db:
+                        port, db = port_db.split('/', 1)
+                    else:
+                        port, db = port_db, '0'
+                else:
+                    host, port, db = redis_url_clean, '6379', '0'
+                password = None
+            
+            r = redis.Redis(host=host, port=int(port), db=int(db), password=password, socket_connect_timeout=3)
+            r.ping()
+            redis_connected = True
+        except Exception as e:
+            redis_error = str(e)
+        
+        # Check active workers
+        inspect = current_app.control.inspect()
+        active_workers = inspect.active() if inspect else None
+        worker_count = len(active_workers) if active_workers else 0
+        
+        # Check registered workers
+        registered_workers = inspect.registered() if inspect else None
+        registered_count = len(registered_workers) if registered_workers else 0
+        
+        status = 'healthy' if (redis_connected and worker_count > 0) else 'unhealthy'
+        
+        return JsonResponse({
+            'status': status,
+            'redis_connected': redis_connected,
+            'redis_error': redis_error,
+            'active_workers': worker_count,
+            'registered_workers': registered_count,
+            'message': 'Worker is running and connected' if status == 'healthy' else 'Worker may not be running or connected to Redis'
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'error': str(e),
+            'message': 'Unable to check worker status'
+        }, status=500)
 
 
 @login_required
