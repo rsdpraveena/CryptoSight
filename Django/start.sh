@@ -10,10 +10,15 @@ echo "=========================================="
 echo "Starting CryptoSight (Synchronous Mode)"
 echo "=========================================="
 
-echo "[1/2] Running database migrations..."
+# Run database migrations
+echo "[1/3] Running database migrations..."
 python manage.py migrate --noinput
 
-# Get PORT early - Render sets this dynamically
+# Collect static files
+echo "[2/3] Collecting static files..."
+python manage.py collectstatic --noinput
+
+# Get PORT from environment variable (set by Render)
 if [ -z "$PORT" ]; then
     echo "⚠ WARNING: PORT environment variable is not set!"
     echo "   Render should set this automatically for web services."
@@ -22,8 +27,6 @@ if [ -z "$PORT" ]; then
 else
     echo "✓ PORT environment variable is set: $PORT"
 fi
-fi
-echo "  → Binding to PORT: $PORT"
 
 # Create necessary directories
 mkdir -p /tmp/celery
